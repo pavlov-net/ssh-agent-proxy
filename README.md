@@ -49,18 +49,27 @@ through a small `gpg.ssh.program` shim.
 ## Build
 
 ```sh
-go build ./...
-go install .              # drops op-sign-proxy in $(go env GOBIN) or ~/go/bin
-# or explicitly:
-go build -o ~/.local/bin/op-sign-proxy .
+make build                # → ./bin/op-sign-proxy
+make install              # → ~/.local/bin/op-sign-proxy (override BINDIR=…)
 ```
 
-Go 1.25+ (as pinned in `go.mod`) and an internet connection for the 1Password
-WASM blob on first build. No CGo.
+Or, without the Makefile:
+
+```sh
+go build ./...
+go install .              # drops op-sign-proxy in $(go env GOBIN) or ~/go/bin
+```
+
+Go 1.25+ (as pinned in `go.mod`) and an internet connection for the
+1Password WASM blob on first build. No CGo.
+
+Run `make` with no arguments to list all targets.
 
 ## Test
 
 ```sh
+make check                # go vet + go test
+# or:
 go test ./...
 ```
 
@@ -148,6 +157,25 @@ Skip this section on a normal Linux box.
    the #1 footgun running systemd user units under WSL2.
 
 ### Install
+
+The `Makefile` wraps all of this up:
+
+```sh
+make install-systemd      # build + install binary + drop unit + drop env template
+$EDITOR ~/.config/op-sign-proxy/env
+systemctl --user enable --now op-sign-proxy.service
+make status               # or: make logs   (tails the journal)
+```
+
+`install-systemd` is idempotent and will **not** clobber an existing
+`~/.config/op-sign-proxy/env` — it only drops the template on first run,
+so re-running it to update the binary or unit file is safe. To remove:
+
+```sh
+make uninstall-systemd    # stops, disables, removes unit. Env file preserved.
+```
+
+Under the hood, the steps it performs are:
 
 ```sh
 # 1. Binary
