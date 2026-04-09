@@ -1,0 +1,46 @@
+[Unit]
+Description=op-sign-proxy: localhost SSH git-signing proxy backed by 1Password
+Documentation=https://github.com/stuartparmenter/op-sign-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=exec requires systemd >= 240; WSL2's systemd is recent enough.
+Type=exec
+ExecStart=%h/.local/bin/op-sign-proxy
+EnvironmentFile=%h/.config/op-sign-proxy/env
+Restart=on-failure
+RestartSec=5s
+
+# --- Sandboxing ---------------------------------------------------------
+# The proxy is stateless: it reads one env file (via EnvironmentFile, which
+# systemd loads for us *before* the service starts), talks to 1Password
+# over HTTPS once at startup, then serves a local HTTP listener. It never
+# writes to disk. These hardening options reflect that.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# NOTE: MemoryDenyWriteExecute is intentionally NOT set. The 1Password Go
+# SDK embeds a WebAssembly module that is JIT-compiled by wazero, which
+# requires PROT_EXEC mmap. Enabling MDWX here will make NewClient() fail
+# with a SIGSYS / "permission denied" from the Wasm compiler.
+
+[Install]
+WantedBy=default.target

@@ -133,6 +133,7 @@ func loadSigner(ctx context.Context, token, ref string) (ssh.Signer, error) {
 func newServer(addr string, signer ssh.Signer, namespace string) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sign", signHandler(signer, namespace))
+	mux.HandleFunc("/publickey", pubkeyHandler(signer))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
@@ -178,5 +179,27 @@ func signHandler(signer ssh.Signer, namespace string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/x-ssh-signature")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(sig)))
 		_, _ = w.Write(sig)
+	}
+}
+
+// pubkeyHandler returns the OpenSSH-format public key line for the loaded
+// signing key. Exposing this lets the container-side shim fetch and cache the
+// public key on demand, so the container's git config never needs to hardcode
+// a specific key (see scripts/op-git-sign.sh).
+func pubkeyHandler(signer ssh.Signer) http.HandlerFunc {
+	line := ssh.MarshalAuthorizedKey(signer.PublicKey())
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(line)))
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(line)
 	}
 }
