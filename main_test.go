@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,15 +20,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// staticSigner is a SignerSource that returns the same ssh.Signer on every
-// call. Used by tests that don't care about rotation — they just need a
-// drop-in source for the handlers.
+// staticSigner is a SignerSource that returns the same ssh.Signer on
+// every call. Used by tests that don't care about rotation.
 type staticSigner struct{ s ssh.Signer }
 
-func (s staticSigner) Signer(context.Context) (ssh.Signer, error) { return s.s, nil }
+func (s staticSigner) Signer(context.Context) (ssh.Signer, func(), error) {
+	return s.s, func() {}, nil
+}
 
-// rotatingSource hands out a different ssh.Signer on each call, cycling
-// through the provided list. It's how we verify that the handlers really
+// rotatingSource hands out a different ssh.Signer on each call,
+// cycling through the provided list. Verifies that handlers really
 // do re-ask the source on every request instead of caching.
 type rotatingSource struct {
 	mu      sync.Mutex
@@ -37,55 +37,21 @@ type rotatingSource struct {
 	calls   int
 }
 
-func (r *rotatingSource) Signer(context.Context) (ssh.Signer, error) {
+func (r *rotatingSource) Signer(context.Context) (ssh.Signer, func(), error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.signers[r.calls%len(r.signers)]
 	r.calls++
-	return s, nil
+	return s, func() {}, nil
 }
 
 // erroringSource always returns an error. Used to check that handlers
-// propagate fetch failures as 503s instead of panicking or returning 500.
+// propagate fetch failures as 503s instead of panicking or returning
+// 500.
 type erroringSource struct{ err error }
 
-func (e erroringSource) Signer(context.Context) (ssh.Signer, error) { return nil, e.err }
-
-// fakeRefSwitcher is an in-memory RefSwitcher for testing POST /ref
-// without hitting a real 1Password backend. It carries a known set of
-// refs → signers and serves Signer() from whatever ref is current.
-// SetRef validates against the map (mirroring the real OnePasswordSource
-// behavior of "validate by trying to resolve before committing").
-type fakeRefSwitcher struct {
-	mu      sync.Mutex
-	refs    map[string]ssh.Signer
-	current string
-}
-
-func (f *fakeRefSwitcher) Signer(context.Context) (ssh.Signer, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s, ok := f.refs[f.current]
-	if !ok {
-		return nil, fmt.Errorf("no signer for current ref %q", f.current)
-	}
-	return s, nil
-}
-
-func (f *fakeRefSwitcher) Ref() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.current
-}
-
-func (f *fakeRefSwitcher) SetRef(_ context.Context, newRef string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.refs[newRef]; !ok {
-		return fmt.Errorf("unknown ref %q (fake SetRef validation)", newRef)
-	}
-	f.current = newRef
-	return nil
+func (e erroringSource) Signer(context.Context) (ssh.Signer, func(), error) {
+	return nil, func() {}, e.err
 }
 
 // TestSignHandlerEndToEnd drives the HTTP handler directly and then feeds
@@ -287,147 +253,8 @@ func TestHandlersRefetchSigner(t *testing.T) {
 	}
 }
 
-// TestRefHandler exercises POST /ref: valid swap, invalid ref, failed
-// swap leaving the previous ref intact, method rejection, and malformed
-// bodies. Uses a fakeRefSwitcher so the test never touches 1Password.
-func TestRefHandler(t *testing.T) {
-	_, priv1, _ := ed25519.GenerateKey(rand.Reader)
-	_, priv2, _ := ed25519.GenerateKey(rand.Reader)
-	s1, _ := ssh.NewSignerFromKey(priv1)
-	s2, _ := ssh.NewSignerFromKey(priv2)
-
-	const refA = "op://Vault/A/private key"
-	const refB = "op://Vault/B/private key"
-
-	fs := &fakeRefSwitcher{
-		refs:    map[string]ssh.Signer{refA: s1, refB: s2},
-		current: refA,
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/publickey", pubkeyHandler(fs))
-	mux.Handle("/ref", refHandler(fs))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	pub := func(t *testing.T) []byte {
-		t.Helper()
-		resp, err := http.Get(srv.URL + "/publickey")
-		if err != nil {
-			t.Fatalf("GET /publickey: %v", err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		return b
-	}
-
-	// Sanity: initial pubkey is signer A's.
-	if got, want := pub(t), ssh.MarshalAuthorizedKey(s1.PublicKey()); !bytes.Equal(got, want) {
-		t.Fatalf("initial /publickey\nwant: %q\ngot:  %q", want, got)
-	}
-
-	// Happy path: swap to B and confirm the response body is B's pubkey.
-	resp, err := http.Post(srv.URL+"/ref", "text/plain", strings.NewReader(refB))
-	if err != nil {
-		t.Fatalf("POST /ref: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		t.Fatalf("POST /ref: status %d: %s", resp.StatusCode, body)
-	}
-	swapBody, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if want := ssh.MarshalAuthorizedKey(s2.PublicKey()); !bytes.Equal(swapBody, want) {
-		t.Fatalf("swap response body\nwant: %q\ngot:  %q", want, swapBody)
-	}
-
-	// Subsequent /publickey must now return B's key.
-	if got, want := pub(t), ssh.MarshalAuthorizedKey(s2.PublicKey()); !bytes.Equal(got, want) {
-		t.Fatalf("/publickey after swap\nwant: %q\ngot:  %q", want, got)
-	}
-	if fs.Ref() != refB {
-		t.Fatalf("fs.Ref() = %q, want %q", fs.Ref(), refB)
-	}
-
-	// Error path: swap to an unknown ref. Must return 400 AND leave the
-	// stored ref unchanged.
-	badResp, err := http.Post(srv.URL+"/ref", "text/plain",
-		strings.NewReader("op://Vault/DOES_NOT_EXIST/private key"))
-	if err != nil {
-		t.Fatalf("POST /ref (bad): %v", err)
-	}
-	badResp.Body.Close()
-	if badResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("bad ref should 400, got %d", badResp.StatusCode)
-	}
-	if got, want := pub(t), ssh.MarshalAuthorizedKey(s2.PublicKey()); !bytes.Equal(got, want) {
-		t.Fatalf("/publickey after failed swap should still be B\nwant: %q\ngot:  %q", want, got)
-	}
-	if fs.Ref() != refB {
-		t.Fatalf("fs.Ref() after failed swap = %q, want %q (unchanged)", fs.Ref(), refB)
-	}
-
-	// Reject non-POST.
-	getResp, _ := http.Get(srv.URL + "/ref")
-	getResp.Body.Close()
-	if getResp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("GET /ref: want 405, got %d", getResp.StatusCode)
-	}
-
-	// Reject empty body.
-	emptyResp, _ := http.Post(srv.URL+"/ref", "text/plain", strings.NewReader(""))
-	emptyResp.Body.Close()
-	if emptyResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("empty body: want 400, got %d", emptyResp.StatusCode)
-	}
-
-	// Reject body missing the op:// prefix (common foot-gun).
-	wrongResp, _ := http.Post(srv.URL+"/ref", "text/plain", strings.NewReader("just-a-path"))
-	wrongResp.Body.Close()
-	if wrongResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("malformed ref: want 400, got %d", wrongResp.StatusCode)
-	}
-
-	// Whitespace around a valid ref should be tolerated.
-	wsResp, err := http.Post(srv.URL+"/ref", "text/plain", strings.NewReader("  "+refA+"\n"))
-	if err != nil {
-		t.Fatalf("POST /ref (whitespace): %v", err)
-	}
-	wsResp.Body.Close()
-	if wsResp.StatusCode != http.StatusOK {
-		t.Fatalf("trimmed ref: want 200, got %d", wsResp.StatusCode)
-	}
-	if fs.Ref() != refA {
-		t.Fatalf("fs.Ref() after trimmed swap = %q, want %q", fs.Ref(), refA)
-	}
-}
-
-// TestRefHandlerNotRegisteredForStaticSigner verifies that when the
-// active SignerSource does not implement RefSwitcher (e.g. our test
-// staticSigner adapter, or a future read-only source), newServer does
-// not register /ref and requests return 404. This is how the real
-// proxy's interface discovery behaves.
-func TestRefHandlerNotRegisteredForStaticSigner(t *testing.T) {
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	signer, _ := ssh.NewSignerFromKey(priv)
-
-	srv := httptest.NewServer(newServer("", staticSigner{signer}, "git").Handler)
-	defer srv.Close()
-
-	resp, err := http.Post(srv.URL+"/ref", "text/plain", strings.NewReader("op://x/y/z"))
-	if err != nil {
-		t.Fatalf("POST /ref: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("static source should not expose /ref; got status %d", resp.StatusCode)
-	}
-}
-
-// TestHandlersPropagateSourceErrors makes sure a failed 1Password fetch
-// surfaces as a 503 (not a 500, which would suggest an internal bug) and
-// does not panic or leak the error text unnecessarily.
+// TestHandlersPropagateSourceErrors makes sure a failed signer fetch
+// (e.g. the agent isn't reachable) surfaces as a 503, not a 500.
 func TestHandlersPropagateSourceErrors(t *testing.T) {
 	src := erroringSource{err: errors.New("1password unreachable")}
 
@@ -458,7 +285,7 @@ func TestHandlersPropagateSourceErrors(t *testing.T) {
 
 // startProxyStub spins up an httptest server that mirrors the real proxy's
 // /sign and /publickey routes using the provided signer. Returns the server
-// and the URL to pass to the shim as OP_SIGN_PROXY_URL.
+// and the URL to pass to the shim as SSH_AGENT_PROXY_URL.
 func startProxyStub(t *testing.T, signer ssh.Signer) (*httptest.Server, string) {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -469,7 +296,7 @@ func startProxyStub(t *testing.T, signer ssh.Signer) (*httptest.Server, string) 
 	return srv, srv.URL + "/sign"
 }
 
-// locateScript returns the path to scripts/op-git-sign.sh relative to this
+// locateScript returns the path to scripts/ssh-agent-proxy-sign.sh relative to this
 // test file, skipping the test if it cannot be found.
 func locateScript(t *testing.T) string {
 	t.Helper()
@@ -477,7 +304,7 @@ func locateScript(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	p := filepath.Join(filepath.Dir(testFile), "scripts", "op-git-sign.sh")
+	p := filepath.Join(filepath.Dir(testFile), "scripts", "ssh-agent-proxy-sign.sh")
 	if _, err := os.Stat(p); err != nil {
 		t.Skipf("script missing: %v", err)
 	}
@@ -494,11 +321,11 @@ func requireShellTools(t *testing.T) {
 	}
 }
 
-// TestOpGitSignScript drives the companion bash script against a local stub
+// TestShimScript drives the companion bash script against a local stub
 // of the proxy to prove it parses ssh-keygen-style arguments correctly,
 // forwards stdin to /sign, AND auto-populates a non-existent `-f <path>`
 // with the public key fetched from /publickey on first use.
-func TestOpGitSignScript(t *testing.T) {
+func TestShimScript(t *testing.T) {
 	requireShellTools(t)
 	scriptPath := locateScript(t)
 
@@ -508,9 +335,9 @@ func TestOpGitSignScript(t *testing.T) {
 	_, proxyURL := startProxyStub(t, signer)
 
 	// Point -f at a path that does NOT exist yet. This mirrors how a user
-	// would set `user.signingkey = ~/.cache/op-git-sign/signing.pub` and
+	// would set `user.signingkey = ~/.cache/ssh-agent-proxy-sign/signing.pub` and
 	// have the shim materialize it on demand.
-	cacheDir := filepath.Join(t.TempDir(), "cache", "op-git-sign")
+	cacheDir := filepath.Join(t.TempDir(), "cache", "ssh-agent-proxy-sign")
 	keyfile := filepath.Join(cacheDir, "signing.pub")
 	if _, err := os.Stat(keyfile); !os.IsNotExist(err) {
 		t.Fatalf("keyfile pre-exists or stat err: %v", err)
@@ -519,7 +346,7 @@ func TestOpGitSignScript(t *testing.T) {
 	msg := []byte("commit payload via bash\n")
 
 	cmd := exec.Command("bash", scriptPath, "-Y", "sign", "-n", "git", "-f", keyfile)
-	cmd.Env = append(os.Environ(), "OP_SIGN_PROXY_URL="+proxyURL)
+	cmd.Env = append(os.Environ(), "SSH_AGENT_PROXY_URL="+proxyURL)
 	cmd.Stdin = bytes.NewReader(msg)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
@@ -552,7 +379,7 @@ func TestOpGitSignScript(t *testing.T) {
 		t.Fatalf("rewrite keyfile: %v", err)
 	}
 	cmd2 := exec.Command("bash", scriptPath, "-Y", "sign", "-n", "git", "-f", keyfile)
-	cmd2.Env = append(os.Environ(), "OP_SIGN_PROXY_URL="+proxyURL)
+	cmd2.Env = append(os.Environ(), "SSH_AGENT_PROXY_URL="+proxyURL)
 	cmd2.Stdin = bytes.NewReader(msg)
 	cmd2.Stdout = io.Discard
 	cmd2.Stderr = &errb
@@ -580,9 +407,9 @@ func TestOpGitSignScript(t *testing.T) {
 	}
 }
 
-// TestOpGitSignPubkeySubcommand exercises the `op-git-sign pubkey` bootstrap
+// TestShimPubkeySubcommand exercises the `ssh-agent-proxy-sign pubkey` bootstrap
 // path, both the stdout form and the "write to <path>" form.
-func TestOpGitSignPubkeySubcommand(t *testing.T) {
+func TestShimPubkeySubcommand(t *testing.T) {
 	requireShellTools(t)
 	scriptPath := locateScript(t)
 
@@ -592,9 +419,9 @@ func TestOpGitSignPubkeySubcommand(t *testing.T) {
 
 	want := ssh.MarshalAuthorizedKey(signer.PublicKey())
 
-	// Form 1: `op-git-sign pubkey` → stdout.
+	// Form 1: `ssh-agent-proxy-sign pubkey` → stdout.
 	cmd := exec.Command("bash", scriptPath, "pubkey")
-	cmd.Env = append(os.Environ(), "OP_SIGN_PROXY_URL="+proxyURL)
+	cmd.Env = append(os.Environ(), "SSH_AGENT_PROXY_URL="+proxyURL)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -605,10 +432,10 @@ func TestOpGitSignPubkeySubcommand(t *testing.T) {
 		t.Fatalf("stdout pubkey mismatch\nwant: %q\ngot:  %q", want, out.Bytes())
 	}
 
-	// Form 2: `op-git-sign pubkey <path>` → writes to <path>.
+	// Form 2: `ssh-agent-proxy-sign pubkey <path>` → writes to <path>.
 	dest := filepath.Join(t.TempDir(), "nested", "cache", "signing.pub")
 	cmd2 := exec.Command("bash", scriptPath, "pubkey", dest)
-	cmd2.Env = append(os.Environ(), "OP_SIGN_PROXY_URL="+proxyURL)
+	cmd2.Env = append(os.Environ(), "SSH_AGENT_PROXY_URL="+proxyURL)
 	cmd2.Stderr = &errb
 	if err := cmd2.Run(); err != nil {
 		t.Fatalf("pubkey <path> subcommand failed: %v\nstderr: %s", err, errb.String())

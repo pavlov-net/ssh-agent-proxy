@@ -1,4 +1,4 @@
-# op-sign-proxy — Makefile
+# ssh-agent-proxy — Makefile
 #
 # Most of the value here is the systemd user-service install lifecycle
 # (install-systemd, uninstall-systemd, status, logs). The build / test /
@@ -12,21 +12,34 @@ SHELL := /bin/bash
 # --- Paths --------------------------------------------------------------
 # Override on the command line, e.g. `make install BINDIR=/usr/local/bin`.
 BINDIR           ?= $(HOME)/.local/bin
-CONFIG_DIR       ?= $(HOME)/.config/op-sign-proxy
+CONFIG_DIR       ?= $(HOME)/.config/ssh-agent-proxy
 SYSTEMD_USER_DIR ?= $(HOME)/.config/systemd/user
 PROXY_URL        ?= http://127.0.0.1:7221
 
-UNIT_SRC  := contrib/systemd/op-sign-proxy.service
-UNIT_DEST := $(SYSTEMD_USER_DIR)/op-sign-proxy.service
+UNIT_SRC  := contrib/systemd/ssh-agent-proxy.service
+UNIT_DEST := $(SYSTEMD_USER_DIR)/ssh-agent-proxy.service
 ENV_SRC   := contrib/systemd/env.example
 ENV_DEST  := $(CONFIG_DIR)/env
 
 # --- Go targets ---------------------------------------------------------
 
 .PHONY: build
-build: ## Build the op-sign-proxy binary into ./bin/
+build: ## Build the ssh-agent-proxy binary for the host platform into ./bin/
 	@mkdir -p bin
-	go build -o bin/op-sign-proxy .
+	go build -o bin/ssh-agent-proxy .
+
+.PHONY: build-windows
+build-windows: ## Cross-compile the Windows binary into ./bin/ssh-agent-proxy.exe
+	@mkdir -p bin
+	GOOS=windows GOARCH=amd64 go build -o bin/ssh-agent-proxy.exe .
+
+.PHONY: build-darwin
+build-darwin: ## Cross-compile the macOS (arm64) binary into ./bin/ssh-agent-proxy-darwin
+	@mkdir -p bin
+	GOOS=darwin GOARCH=arm64 go build -o bin/ssh-agent-proxy-darwin .
+
+.PHONY: build-all
+build-all: build build-windows build-darwin ## Cross-compile for Linux, Windows, and macOS
 
 .PHONY: test
 test: ## Run the full test suite
@@ -48,14 +61,14 @@ clean: ## Remove built artifacts
 .PHONY: install
 install: build ## Install the binary into $(BINDIR) (default ~/.local/bin)
 	install -d -m 0755 $(BINDIR)
-	install -m 0755 bin/op-sign-proxy $(BINDIR)/op-sign-proxy
-	@echo "Installed $(BINDIR)/op-sign-proxy"
+	install -m 0755 bin/ssh-agent-proxy $(BINDIR)/ssh-agent-proxy
+	@echo "Installed $(BINDIR)/ssh-agent-proxy"
 
 .PHONY: install-systemd
 install-systemd: install ## Install binary + systemd user unit + env template, then reload
 	install -d -m 0700 $(CONFIG_DIR)
 	@if [ -e $(ENV_DEST) ]; then \
-		echo "Keeping existing $(ENV_DEST) (contains secrets; edit manually)"; \
+		echo "Keeping existing $(ENV_DEST) (edit manually to change)"; \
 	else \
 		install -m 0600 $(ENV_SRC) $(ENV_DEST); \
 		echo "Wrote $(ENV_DEST) from template"; \
@@ -65,25 +78,26 @@ install-systemd: install ## Install binary + systemd user unit + env template, t
 	systemctl --user daemon-reload
 	@echo
 	@echo "Next steps:"
-	@echo "  1. Edit $(ENV_DEST) to set OP_SERVICE_ACCOUNT_TOKEN and OP_SSH_KEY_REF"
-	@echo "  2. systemctl --user enable --now op-sign-proxy.service"
+	@echo "  1. Edit $(ENV_DEST) to set SSH_AUTH_SOCK (or SSH_AGENT_PROXY_UPSTREAM)"
+	@echo "     pointing at your local ssh-agent (e.g. 1Password Desktop)."
+	@echo "  2. systemctl --user enable --now ssh-agent-proxy.service"
 	@echo "  3. Under WSL2 (first time only): sudo loginctl enable-linger \$$USER"
 
 .PHONY: uninstall-systemd
 uninstall-systemd: ## Stop, disable, and remove the systemd user unit (env file preserved)
-	-systemctl --user disable --now op-sign-proxy.service
+	-systemctl --user disable --now ssh-agent-proxy.service
 	rm -f $(UNIT_DEST)
 	systemctl --user daemon-reload
 	@echo "Removed $(UNIT_DEST)"
-	@echo "$(ENV_DEST) preserved (contains secrets). Delete manually if desired."
+	@echo "$(ENV_DEST) preserved. Delete manually if desired."
 
 .PHONY: status
-status: ## systemctl --user status op-sign-proxy
-	systemctl --user status op-sign-proxy.service
+status: ## systemctl --user status ssh-agent-proxy
+	systemctl --user status ssh-agent-proxy.service
 
 .PHONY: logs
-logs: ## journalctl --user -u op-sign-proxy -f
-	journalctl --user -u op-sign-proxy.service -f
+logs: ## journalctl --user -u ssh-agent-proxy -f
+	journalctl --user -u ssh-agent-proxy.service -f
 
 .PHONY: pubkey
 pubkey: ## Fetch the public key from a running proxy
@@ -93,7 +107,7 @@ pubkey: ## Fetch the public key from a running proxy
 
 .PHONY: help
 help: ## Show this help
-	@awk 'BEGIN { FS = ":.*##"; printf "op-sign-proxy targets:\n\n" } \
+	@awk 'BEGIN { FS = ":.*##"; printf "ssh-agent-proxy targets:\n\n" } \
 	      /^[a-zA-Z_-]+:.*##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' \
 	      $(MAKEFILE_LIST)
 	@echo

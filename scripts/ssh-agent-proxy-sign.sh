@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# op-git-sign: a drop-in replacement for ssh-keygen when used as
+# ssh-agent-proxy-sign: a drop-in replacement for ssh-keygen when used as
 # `gpg.ssh.program` inside a container. For "-Y sign" operations it forwards
-# the data to sign to op-sign-proxy running on the host (by default at
+# the data to sign to ssh-agent-proxy running on the host (by default at
 # http://127.0.0.1:7221/sign) and returns the armored SSHSIG signature that
 # ssh-keygen would have produced. For any other ssh-keygen sub-command
 # (notably "-Y check-novalidate" / "-Y verify") it transparently execs the
@@ -18,51 +18,54 @@
 # to "<file>.sig" instead; we preserve that behaviour.
 #
 # Public-key bootstrap: the proxy exposes GET /publickey returning the
-# OpenSSH-format public key line for the key it loaded from 1Password. When
-# git passes a `-f <path>` that doesn't exist yet, this shim fetches that
+# OpenSSH-format public key line for the key it's currently configured
+# to sign with (which it learns from its upstream ssh-agent). When git
+# passes a `-f <path>` that doesn't exist yet, this shim fetches that
 # key and writes it to <path> before signing. That means the container's
-# `user.signingkey` can point to e.g. ~/.cache/op-git-sign/signing.pub and
-# the file will be created on first use — no specific public key needs to
-# be baked into the container image or dotfiles. `rm` the cache file to
-# force a refresh after rotating the key in 1Password.
+# `user.signingkey` can point at e.g. ~/.cache/ssh-agent-proxy-sign/signing.pub
+# and the file will be created on first use — no specific public key
+# needs to be baked into the container image or dotfiles. `rm` the cache
+# file to force a refresh after rotating your key upstream.
 #
 # Subcommands:
 #
-#     op-git-sign pubkey [path]
+#     ssh-agent-proxy-sign pubkey [path]
 #         Fetch the public key from the proxy and print it to stdout, or
 #         write it to <path> if given. Useful for bootstrapping
 #         allowedSignersFile or seeding dotfiles.
 #
 # Environment variables:
 #
-#   OP_SIGN_PROXY_URL         Full URL of the sign endpoint
+#   SSH_AGENT_PROXY_URL         Full URL of the sign endpoint
 #                             (default: http://127.0.0.1:7221/sign)
-#   OP_SIGN_PROXY_PUBKEY_URL  Full URL of the publickey endpoint
-#                             (default: derived from OP_SIGN_PROXY_URL by
+#   SSH_AGENT_PROXY_PUBKEY_URL  Full URL of the publickey endpoint
+#                             (default: derived from SSH_AGENT_PROXY_URL by
 #                             replacing /sign with /publickey)
-#   OP_SIGN_PROXY_CURL        Override the curl binary (default: curl)
+#   SSH_AGENT_PROXY_CURL        Override the curl binary (default: curl)
 #
 # Usage inside the container:
 #
 #   git config --global gpg.format ssh
-#   git config --global gpg.ssh.program /usr/local/bin/op-git-sign
-#   git config --global user.signingkey ~/.cache/op-git-sign/signing.pub
+#   git config --global gpg.ssh.program /usr/local/bin/ssh-agent-proxy-sign
+#   git config --global user.signingkey ~/.cache/ssh-agent-proxy-sign/signing.pub
 #   git config --global commit.gpgsign true
 #   git config --global tag.gpgsign true
 
 set -euo pipefail
 
-PROXY_URL="${OP_SIGN_PROXY_URL:-http://127.0.0.1:7221/sign}"
-PUBKEY_URL="${OP_SIGN_PROXY_PUBKEY_URL:-${PROXY_URL%/sign}/publickey}"
-CURL="${OP_SIGN_PROXY_CURL:-curl}"
+PROXY_URL="${SSH_AGENT_PROXY_URL:-http://127.0.0.1:7221/sign}"
+PUBKEY_URL="${SSH_AGENT_PROXY_PUBKEY_URL:-${PROXY_URL%/sign}/publickey}"
+CURL="${SSH_AGENT_PROXY_CURL:-curl}"
 
 die() {
-    printf 'op-git-sign: %s\n' "$*" >&2
+    printf 'ssh-agent-proxy-sign: %s\n' "$*" >&2
     exit 1
 }
 
 fetch_pubkey() {
-    "$CURL" --silent --show-error --fail "$PUBKEY_URL"
+    "$CURL" --silent --show-error --fail \
+        --proto '=http,https' --proto-redir '=http,https' \
+        "$PUBKEY_URL"
 }
 
 # Handle the `pubkey` subcommand before any argument parsing. Everything
@@ -79,7 +82,7 @@ if [[ $# -ge 1 && "$1" == "pubkey" ]]; then
         mv "$tmp" "$dest"
         trap - EXIT
     else
-        die "usage: op-git-sign pubkey [path]"
+        die "usage: ssh-agent-proxy-sign pubkey [path]"
     fi
     exit 0
 fi
@@ -174,8 +177,11 @@ fi
 
 post_sign() {
     # --fail makes curl exit non-zero on HTTP errors; --data-binary @-
-    # streams stdin without any newline mangling.
+    # streams stdin without any newline mangling. --proto restricts to
+    # http(s) so a misconfigured $PROXY_URL can't exfiltrate via
+    # file://, scp://, gopher://, etc.
     "$CURL" --silent --show-error --fail \
+        --proto '=http,https' --proto-redir '=http,https' \
         --header 'Content-Type: application/octet-stream' \
         --data-binary @- \
         "$PROXY_URL"
