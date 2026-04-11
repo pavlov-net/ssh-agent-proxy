@@ -34,7 +34,7 @@ async fn sign_handler(State(state): State<Arc<AppState>>, body: Bytes) -> Respon
         return (StatusCode::BAD_REQUEST, "request body too large\n").into_response();
     }
 
-    let (signer, _cleanup) = match state.source.signer() {
+    let signer = match state.source.signer() {
         Ok(s) => s,
         Err(e) => {
             log::error!("signer fetch: {e}");
@@ -57,7 +57,7 @@ async fn sign_handler(State(state): State<Arc<AppState>>, body: Bytes) -> Respon
 }
 
 async fn publickey_handler(State(state): State<Arc<AppState>>) -> Response {
-    let (signer, _cleanup) = match state.source.signer() {
+    let signer = match state.source.signer() {
         Ok(s) => s,
         Err(e) => {
             log::error!("signer fetch: {e}");

@@ -245,7 +245,7 @@ fn install_service(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let start_type = if system_service {
         ServiceStartType::AutoStart
     } else {
-        ServiceStartType::AutoStart
+        ServiceStartType::OnDemand
     };
 
     let service_info = ServiceInfo {

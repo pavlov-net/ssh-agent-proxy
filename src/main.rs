@@ -3,6 +3,7 @@ mod agent_source;
 mod config;
 mod server;
 mod sshsig;
+mod wire;
 
 #[cfg(unix)]
 mod dialer_unix;

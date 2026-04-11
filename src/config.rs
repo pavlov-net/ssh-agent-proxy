@@ -63,13 +63,12 @@ fn load_pubkey_line() -> Result<Option<String>, String> {
 
 /// Parse "ssh-ed25519 AAAA... comment" -> wire-format bytes (base64 decode the second field)
 fn parse_authorized_key(line: &str) -> Result<Vec<u8>, String> {
-    let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-    if parts.len() < 2 {
-        return Err("invalid authorized_keys format".into());
-    }
+    let mut parts = line.trim().splitn(3, ' ');
+    let _algo = parts.next();
+    let b64 = parts.next().ok_or("invalid authorized_keys format")?;
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
-        .decode(parts[1])
+        .decode(b64)
         .map_err(|e| format!("parse pubkey: {e}"))
 }
 

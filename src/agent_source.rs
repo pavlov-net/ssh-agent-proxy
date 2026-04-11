@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::agent::{AgentClient, AgentError, AgentKey, SSH_AGENT_RSA_SHA2_512};
 use crate::sshsig;
+use crate::wire;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,12 +44,12 @@ pub enum SourceError {
 // ---------------------------------------------------------------------------
 
 /// Trait alias for streams that support both read and write.
-pub trait ReadWriteStream: Read + Write + Send {}
+pub(crate) trait ReadWriteStream: Read + Write + Send {}
 impl<T: Read + Write + Send> ReadWriteStream for T {}
 
 /// Trait for platform-specific connection opening. Each platform (Unix, Windows)
 /// provides its own implementation that dials the SSH agent socket / pipe.
-pub trait AgentDialer: Send + Sync {
+pub(crate) trait AgentDialer: Send + Sync {
     /// Open a new connection to the SSH agent.
     fn dial(&self) -> Result<Box<dyn ReadWriteStream>, io::Error>;
     /// Human-readable name for error messages (e.g. the socket path).
@@ -80,13 +81,7 @@ impl AgentSource {
     }
 
     /// Connect to the agent and return a signer for the configured key.
-    ///
-    /// The returned cleanup function is a no-op today (the stream drops when
-    /// the signer is dropped) but the signature leaves room for future
-    /// resource management.
-    pub fn signer(
-        &self,
-    ) -> Result<(Box<dyn sshsig::Signer>, Box<dyn FnOnce()>), SourceError> {
+    pub fn signer(&self) -> Result<Box<dyn sshsig::Signer + Send>, SourceError> {
         // 1. Dial the agent.
         let stream = self.dialer.dial().map_err(|e| SourceError::Dial {
             name: self.dialer.name().to_string(),
@@ -112,7 +107,7 @@ impl AgentSource {
             key_type,
         };
 
-        Ok((Box::new(signer), Box::new(|| {})))
+        Ok(Box::new(signer))
     }
 }
 
@@ -172,24 +167,10 @@ impl sshsig::Signer for AgentBackedSigner {
 /// The first field of every SSH public key blob is an SSH-string containing
 /// the algorithm name (e.g. "ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256").
 fn extract_key_type(blob: &[u8]) -> Result<String, SourceError> {
-    if blob.len() < 4 {
-        return Err(SourceError::ParseKey(
-            "key blob too short for length prefix".to_string(),
-        ));
-    }
-
-    let len = u32::from_be_bytes(blob[0..4].try_into().unwrap()) as usize;
-    let start = 4;
-    let end = start + len;
-
-    if end > blob.len() {
-        return Err(SourceError::ParseKey(format!(
-            "key type string length {len} exceeds blob size {}",
-            blob.len()
-        )));
-    }
-
-    String::from_utf8(blob[start..end].to_vec())
+    let (type_bytes, _) =
+        wire::read_string(blob, 0).map_err(|e| SourceError::ParseKey(e.0.to_string()))?;
+    std::str::from_utf8(type_bytes)
+        .map(|s| s.to_owned())
         .map_err(|e| SourceError::ParseKey(format!("key type is not valid UTF-8: {e}")))
 }
 

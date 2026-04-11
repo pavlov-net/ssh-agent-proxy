@@ -2,6 +2,8 @@ use std::io::{self, Read, Write};
 
 use thiserror::Error;
 
+use crate::wire;
+
 // SSH agent protocol message types
 const SSH_AGENT_FAILURE: u8 = 5;
 const SSH_AGENTC_REQUEST_IDENTITIES: u8 = 11;
@@ -9,10 +11,8 @@ const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
 const SSH_AGENTC_SIGN_REQUEST: u8 = 13;
 const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
 
-/// Sign flag: request RSA SHA-256 signature.
-pub const SSH_AGENT_RSA_SHA2_256: u32 = 0x02;
 /// Sign flag: request RSA SHA-512 signature.
-pub const SSH_AGENT_RSA_SHA2_512: u32 = 0x04;
+pub(crate) const SSH_AGENT_RSA_SHA2_512: u32 = 0x04;
 
 /// Maximum response size (256 KiB).
 const MAX_RESPONSE_SIZE: u32 = 256 * 1024;
@@ -64,11 +64,6 @@ impl<S: Read + Write> AgentClient<S> {
         AgentClient { stream }
     }
 
-    /// Consume the client and return the underlying stream.
-    pub fn into_inner(self) -> S {
-        self.stream
-    }
-
     /// List all identities (public keys) held by the agent.
     pub fn list_identities(&mut self) -> Result<Vec<AgentKey>, AgentError> {
         // Send REQUEST_IDENTITIES: just the message type byte, no body.
@@ -100,8 +95,8 @@ impl<S: Read + Write> AgentClient<S> {
         // Build SIGN_REQUEST payload: type + string(key_blob) + string(data) + u32(flags)
         let mut payload = Vec::new();
         payload.push(SSH_AGENTC_SIGN_REQUEST);
-        write_bytes(&mut payload, key_blob);
-        write_bytes(&mut payload, data);
+        wire::write_string(&mut payload, key_blob);
+        wire::write_string(&mut payload, data);
         payload.extend_from_slice(&flags.to_be_bytes());
 
         self.send_message(&payload)?;
@@ -149,29 +144,8 @@ impl<S: Read + Write> AgentClient<S> {
     }
 }
 
-/// Write an SSH string (4-byte length + bytes) into `buf`.
-fn write_bytes(buf: &mut Vec<u8>, data: &[u8]) {
-    let len = data.len() as u32;
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(data);
-}
-
-/// Read an SSH string from `data` at `offset`. Returns (bytes, new_offset).
-fn read_bytes(data: &[u8], offset: usize) -> Result<(&[u8], usize), AgentError> {
-    if offset + 4 > data.len() {
-        return Err(AgentError::Malformed(
-            "truncated string length".into(),
-        ));
-    }
-    let len = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-    let start = offset + 4;
-    let end = start + len;
-    if end > data.len() {
-        return Err(AgentError::Malformed(
-            "truncated string data".into(),
-        ));
-    }
-    Ok((&data[start..end], end))
+fn read_string(data: &[u8], offset: usize) -> Result<(&[u8], usize), AgentError> {
+    wire::read_string(data, offset).map_err(|e| AgentError::Malformed(e.0.to_string()))
 }
 
 /// Parse an IDENTITIES_ANSWER body (after the message type byte).
@@ -187,9 +161,9 @@ fn parse_identities_answer(data: &[u8]) -> Result<Vec<AgentKey>, AgentError> {
     let mut offset = 4;
 
     for _ in 0..nkeys {
-        let (blob, next) = read_bytes(data, offset)?;
+        let (blob, next) = read_string(data, offset)?;
         offset = next;
-        let (comment_bytes, next) = read_bytes(data, offset)?;
+        let (comment_bytes, next) = read_string(data, offset)?;
         offset = next;
         keys.push(AgentKey {
             blob: blob.to_vec(),
@@ -203,11 +177,11 @@ fn parse_identities_answer(data: &[u8]) -> Result<Vec<AgentKey>, AgentError> {
 /// Parse a SIGN_RESPONSE body (after the message type byte).
 /// The body is: string(signature_blob), where signature_blob = string(format) + string(sig_bytes).
 fn parse_sign_response(data: &[u8]) -> Result<AgentSignature, AgentError> {
-    let (sig_blob, _) = read_bytes(data, 0)?;
+    let (sig_blob, _) = read_string(data, 0)?;
 
     // Inside the signature blob: string(format) + string(sig_bytes)
-    let (format_bytes, offset) = read_bytes(sig_blob, 0)?;
-    let (sig_bytes, _) = read_bytes(sig_blob, offset)?;
+    let (format_bytes, offset) = read_string(sig_blob, 0)?;
+    let (sig_bytes, _) = read_string(sig_blob, offset)?;
 
     Ok(AgentSignature {
         format: String::from_utf8_lossy(format_bytes).into_owned(),
@@ -219,23 +193,10 @@ fn parse_sign_response(data: &[u8]) -> Result<AgentSignature, AgentError> {
 mod tests {
     use super::*;
 
-    /// Helper: build an SSH string.
     fn ssh_string(data: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
-        let len = data.len() as u32;
-        out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(data);
+        wire::write_string(&mut out, data);
         out
-    }
-
-    #[test]
-    fn test_write_and_read_bytes_roundtrip() {
-        let mut buf = Vec::new();
-        write_bytes(&mut buf, b"hello");
-
-        let (result, end) = read_bytes(&buf, 0).unwrap();
-        assert_eq!(result, b"hello");
-        assert_eq!(end, buf.len());
     }
 
     #[test]

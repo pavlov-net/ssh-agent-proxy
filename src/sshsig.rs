@@ -3,6 +3,8 @@ use base64::Engine;
 use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 
+use crate::wire;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -55,12 +57,6 @@ pub trait Signer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Write an SSH-string (4-byte big-endian length + payload) into `buf`.
-fn write_ssh_string(buf: &mut Vec<u8>, data: &[u8]) {
-    buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    buf.extend_from_slice(data);
-}
-
 /// Hash `message` with the given algorithm name, returning the digest bytes.
 fn hash_message(hash_alg: &str, message: &[u8]) -> Result<Vec<u8>, Error> {
     match hash_alg {
@@ -89,10 +85,10 @@ fn hash_message(hash_alg: &str, message: &[u8]) -> Result<Vec<u8>, Error> {
 fn build_signed_data(namespace: &str, hash_alg: &str, message_hash: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC_PREAMBLE);
-    write_ssh_string(&mut buf, namespace.as_bytes());
-    write_ssh_string(&mut buf, b""); // reserved
-    write_ssh_string(&mut buf, hash_alg.as_bytes());
-    write_ssh_string(&mut buf, message_hash);
+    wire::write_string(&mut buf, namespace.as_bytes());
+    wire::write_string(&mut buf, b""); // reserved
+    wire::write_string(&mut buf, hash_alg.as_bytes());
+    wire::write_string(&mut buf, message_hash);
     buf
 }
 
@@ -117,17 +113,17 @@ fn marshal_signature(
 ) -> Vec<u8> {
     // Build sig_wire = SSH-string(format) + SSH-string(blob)
     let mut sig_wire = Vec::new();
-    write_ssh_string(&mut sig_wire, sig.format.as_bytes());
-    write_ssh_string(&mut sig_wire, &sig.blob);
+    wire::write_string(&mut sig_wire, sig.format.as_bytes());
+    wire::write_string(&mut sig_wire, &sig.blob);
 
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC_PREAMBLE);
     buf.extend_from_slice(&SIG_VERSION.to_be_bytes());
-    write_ssh_string(&mut buf, &pubkey.wire);
-    write_ssh_string(&mut buf, namespace.as_bytes());
-    write_ssh_string(&mut buf, b""); // reserved
-    write_ssh_string(&mut buf, hash_alg.as_bytes());
-    write_ssh_string(&mut buf, &sig_wire);
+    wire::write_string(&mut buf, &pubkey.wire);
+    wire::write_string(&mut buf, namespace.as_bytes());
+    wire::write_string(&mut buf, b""); // reserved
+    wire::write_string(&mut buf, hash_alg.as_bytes());
+    wire::write_string(&mut buf, &sig_wire);
     buf
 }
 
@@ -260,8 +256,9 @@ mod tests {
 
     #[test]
     fn test_write_ssh_string() {
+        // Tested in wire::tests; verify it works from sshsig context too
         let mut buf = Vec::new();
-        write_ssh_string(&mut buf, b"hello");
+        wire::write_string(&mut buf, b"hello");
         assert_eq!(buf[0..4], [0, 0, 0, 5]);
         assert_eq!(&buf[4..], b"hello");
     }
@@ -382,8 +379,8 @@ mod tests {
 
             // SSH wire format: SSH-string("ssh-ed25519") + SSH-string(32-byte key)
             let mut wire = Vec::new();
-            write_ssh_string(&mut wire, b"ssh-ed25519");
-            write_ssh_string(&mut wire, &pk_bytes);
+            wire::write_string(&mut wire, b"ssh-ed25519");
+            wire::write_string(&mut wire, &pk_bytes);
 
             Self {
                 signing_key,
@@ -452,9 +449,9 @@ mod tests {
             // SSH wire format for RSA: SSH-string("ssh-rsa") + SSH-string(e) + SSH-string(n)
             // Both e and n are encoded as mpint (big-endian, with leading zero if MSB set).
             let mut wire = Vec::new();
-            write_ssh_string(&mut wire, b"ssh-rsa");
-            write_ssh_string(&mut wire, &to_ssh_mpint(&public_key.e().to_bytes_be()));
-            write_ssh_string(&mut wire, &to_ssh_mpint(&public_key.n().to_bytes_be()));
+            wire::write_string(&mut wire, b"ssh-rsa");
+            wire::write_string(&mut wire, &to_ssh_mpint(&public_key.e().to_bytes_be()));
+            wire::write_string(&mut wire, &to_ssh_mpint(&public_key.n().to_bytes_be()));
 
             let signing_key = rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private_key);
 
