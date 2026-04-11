@@ -25,16 +25,14 @@ jobs:
         run: |
           sed -i "s/^version = .*/version = \"${VERSION}\"/" Cargo.toml
 
-      - name: Regenerate lockfile
-        run: cargo generate-lockfile
-
       - name: Commit changes
         env:
           VERSION: ${{ steps.drafter.outputs.resolved_version }}
         run: |
-          if ! git diff --quiet; then
+          if ! git diff --quiet Cargo.toml; then
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -am "Bump version to ${VERSION} [skip ci]"
+            git add Cargo.toml
+            git commit -m "Bump version to ${VERSION} [skip ci]"
             git push
           fi
