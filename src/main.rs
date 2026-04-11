@@ -16,6 +16,12 @@ mod hardening_macos;
 #[cfg(target_os = "windows")]
 mod hardening_windows;
 
+#[cfg(windows)]
+mod service_windows;
+#[cfg(not(windows))]
+#[path = "service_stub.rs"]
+mod service_windows;
+
 use std::sync::Arc;
 
 fn harden_process() {
@@ -29,6 +35,28 @@ fn harden_process() {
 
 #[tokio::main]
 async fn main() {
+    // Service subcommands (Windows only: install / uninstall).
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "install" | "uninstall" => {
+                if let Err(e) = service_windows::run_service_cmd(&args[1], &args[2..]) {
+                    eprintln!("{}: {e}", args[1]);
+                    std::process::exit(1);
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    // When launched by the Windows SCM, delegate to the service dispatcher
+    // (which sets up its own logging and tokio runtime).
+    if service_windows::is_windows_service() {
+        service_windows::run_as_windows_service();
+        return;
+    }
+
     env_logger::init();
     harden_process();
 
