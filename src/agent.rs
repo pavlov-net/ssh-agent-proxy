@@ -157,7 +157,7 @@ fn parse_identities_answer(data: &[u8]) -> Result<Vec<AgentKey>, AgentError> {
     }
 
     let nkeys = u32::from_be_bytes(data[0..4].try_into().unwrap()) as usize;
-    let mut keys = Vec::with_capacity(nkeys);
+    let mut keys = Vec::with_capacity(nkeys.min(64));
     let mut offset = 4;
 
     for _ in 0..nkeys {

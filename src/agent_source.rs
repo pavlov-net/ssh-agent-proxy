@@ -143,8 +143,10 @@ impl sshsig::Signer for AgentBackedSigner {
 
         let sig = client.sign(&self.pub_key.wire, data, flags)?;
 
-        // Anti-downgrade check: verify the agent returned the expected format.
-        if self.key_type == KEY_ALGO_RSA && sig.format != want_fmt {
+        // Anti-downgrade: verify the agent returned the expected signature
+        // format. For RSA this prevents SHA-1 fallback; for other key types
+        // it catches a misbehaving agent returning a mismatched algorithm.
+        if sig.format != want_fmt {
             return Err(Box::new(SourceError::SignatureDowngrade {
                 got: sig.format,
                 want: want_fmt.to_string(),

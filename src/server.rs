@@ -1,6 +1,6 @@
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -23,6 +23,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/sign", post(sign_handler))
         .route("/publickey", get(publickey_handler))
         .route("/healthz", get(healthz_handler))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(state)
 }
 
