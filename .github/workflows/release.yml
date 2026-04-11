@@ -55,6 +55,7 @@ jobs:
           cd target/${TARGET}/release
           tar czf ../../../ssh-agent-proxy-${TARGET}.tar.gz ssh-agent-proxy
           cd ../../..
+          sha256sum ssh-agent-proxy-${TARGET}.tar.gz > ssh-agent-proxy-${TARGET}.tar.gz.sha256
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -64,8 +65,9 @@ jobs:
           cd target/$env:TARGET/release
           Compress-Archive -Path ssh-agent-proxy.exe -DestinationPath ../../../ssh-agent-proxy-$env:TARGET.zip
           cd ../../..
+          (Get-FileHash -Algorithm SHA256 "ssh-agent-proxy-$env:TARGET.zip").Hash.ToLower() + "  ssh-agent-proxy-$env:TARGET.zip" | Out-File -Encoding ascii "ssh-agent-proxy-$env:TARGET.zip.sha256"
 
-      - name: Upload release asset
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
