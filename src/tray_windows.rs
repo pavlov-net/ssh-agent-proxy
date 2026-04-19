@@ -8,10 +8,10 @@ use tokio::sync::Notify;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, PostQuitMessage, TranslateMessage, MSG,
+    DispatchMessageW, GetMessageW, MSG, PostQuitMessage, TranslateMessage,
 };
 
-use crate::{autostart_windows, APP_SLUG};
+use crate::{APP_SLUG, autostart_windows};
 
 /// Max time to wait for in-flight requests to finish after the user picks
 /// Exit. The process exits regardless once this elapses; any stuck server
