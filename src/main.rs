@@ -22,6 +22,10 @@ mod hardening_windows;
 #[cfg(windows)]
 mod autostart_windows;
 #[cfg(windows)]
+mod bind_address_windows;
+#[cfg(windows)]
+mod registry_windows;
+#[cfg(windows)]
 mod tray_windows;
 
 use std::sync::Arc;
@@ -110,14 +114,48 @@ pub(crate) async fn run(
     });
 
     let app = server::router(state);
-    let listener = tokio::net::TcpListener::bind(&cfg.addr).await?;
-    log::info!("listening on {} (namespace {:?})", cfg.addr, cfg.namespace);
+    let listener = bind_with_fallback(&cfg.addr).await?;
+    log::info!(
+        "listening on {} (namespace {:?})",
+        listener.local_addr()?,
+        cfg.namespace
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown))
         .await?;
 
     Ok(())
+}
+
+/// Bind the listener, falling back to loopback on the same port if the
+/// requested address is unavailable (e.g. Tailscale mode selected but the
+/// interface isn't up yet, or the bind failed with `EADDRNOTAVAIL`).
+async fn bind_with_fallback(addr: &str) -> std::io::Result<tokio::net::TcpListener> {
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => Ok(l),
+        Err(e) => {
+            let fallback = fallback_addr(addr);
+            if fallback == addr {
+                return Err(e);
+            }
+            log::warn!("bind {addr} failed ({e}); falling back to {fallback}");
+            tokio::net::TcpListener::bind(&fallback)
+                .await
+                .map_err(|e2| {
+                    log::error!("fallback bind to {fallback} also failed: {e2}");
+                    e2
+                })
+        }
+    }
+}
+
+fn fallback_addr(addr: &str) -> String {
+    let port = addr
+        .parse::<std::net::SocketAddr>()
+        .map(|sa| sa.port())
+        .unwrap_or(config::DEFAULT_PORT);
+    format!("127.0.0.1:{port}")
 }
 
 async fn shutdown_signal(tray: Arc<Notify>) {
