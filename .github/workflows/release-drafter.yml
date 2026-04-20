@@ -12,7 +12,7 @@ permissions:
 jobs:
   release-drafter:
     name: Release Drafter
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: release-drafter/release-drafter@5de93583980a40bd78603b6dfdcda5b4df377b32 # v7
         id: drafter
