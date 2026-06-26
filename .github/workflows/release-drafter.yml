@@ -14,7 +14,7 @@ jobs:
     name: Release Drafter
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: release-drafter/release-drafter@ed4bc48ec97379be2258e7b7ac2624a3e26ab809 # v7
+      - uses: release-drafter/release-drafter@4d75298e00d9e34c483e5ff8c68d0ea1c1940c1e # v7
         id: drafter
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -25,7 +25,7 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-edit
-        uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+        uses: taiki-e/install-action@682e7d9e49c5e653d371fc6adbda67653461378a # v2.82.4
         with:
           tool: cargo-edit
 
