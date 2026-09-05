@@ -360,6 +360,12 @@ mod tests {
 
     // -- Ed25519 test signer --------------------------------------------------
 
+    fn generate_ed25519_test_key() -> ed25519_dalek::SigningKey {
+        let mut seed = [0u8; 32];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut seed);
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+    }
+
     /// A Signer backed by a local Ed25519 key for tests.
     struct Ed25519TestSigner {
         signing_key: ed25519_dalek::SigningKey,
@@ -408,7 +414,7 @@ mod tests {
         use ssh_key::PrivateKey;
         use ssh_key::private::Ed25519Keypair;
 
-        let keypair = Ed25519Keypair::from(signing_key);
+        let keypair = Ed25519Keypair::from_seed(&signing_key.to_bytes());
         let private_key = PrivateKey::from(keypair);
         let pem = private_key
             .to_openssh(ssh_key::LineEnding::LF)
@@ -529,7 +535,7 @@ mod tests {
             return;
         }
 
-        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let signing_key = generate_ed25519_test_key();
 
         let signer = Ed25519TestSigner::new(signing_key.clone());
 
@@ -591,7 +597,7 @@ mod tests {
             return;
         }
 
-        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let signing_key = generate_ed25519_test_key();
         let signer = Ed25519TestSigner::new(signing_key);
 
         let namespace = "git";
