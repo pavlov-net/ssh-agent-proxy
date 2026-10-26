@@ -9,8 +9,33 @@ permissions:
   id-token: write
 
 jobs:
+  verify-version:
+    name: Verify tag matches crate version
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+
+      # The tag can be edited in the release form, so check it against Cargo.toml
+      # before building anything.
+      - name: Compare tag to crate version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$version" != "${TAG#v}" ]; then
+            echo "::error::Release tag ${TAG} does not match Cargo.toml version ${version}"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify-version
     runs-on: ${{ matrix.os }}
     environment: ${{ matrix.environment }}
     strategy:
