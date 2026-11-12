@@ -276,7 +276,7 @@ mod tests {
 
     use ed25519_dalek::Signer as DalekSigner;
     use rsa::signature::SignatureEncoding;
-    use rsa::traits::PublicKeyParts;
+    use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 
     /// Check whether ssh-keygen is available; return its path or None.
     fn find_ssh_keygen() -> Option<String> {
@@ -443,15 +443,15 @@ mod tests {
     }
 
     impl RsaTestSigner {
-        fn new(private_key: rsa::RsaPrivateKey) -> Self {
+        fn new(private_key: rsa::PrivateKey) -> Self {
             let public_key = private_key.to_public_key();
 
             // SSH wire format for RSA: SSH-string("ssh-rsa") + SSH-string(e) + SSH-string(n)
             // Both e and n are encoded as mpint (big-endian, with leading zero if MSB set).
             let mut wire = Vec::new();
             wire::write_string(&mut wire, b"ssh-rsa");
-            wire::write_string(&mut wire, &to_ssh_mpint(&public_key.e().to_bytes_be()));
-            wire::write_string(&mut wire, &to_ssh_mpint(&public_key.n().to_bytes_be()));
+            wire::write_string(&mut wire, &to_ssh_mpint(&public_key.e().to_be_bytes()));
+            wire::write_string(&mut wire, &to_ssh_mpint(&public_key.n().to_be_bytes()));
 
             let signing_key = rsa::pkcs1v15::SigningKey::<rsa::sha2::Sha512>::new(private_key);
 
@@ -500,12 +500,35 @@ mod tests {
     }
 
     /// Write an RSA private key to a temp file in OpenSSH format, returning the path.
-    fn write_rsa_key_file(dir: &std::path::Path, private_key: &rsa::RsaPrivateKey) -> String {
+    fn write_rsa_key_file(dir: &std::path::Path, private_key: &rsa::PrivateKey) -> String {
+        use ssh_key::Mpint;
         use ssh_key::PrivateKey;
-        use ssh_key::private::RsaKeypair;
+        use ssh_key::private::{RsaKeypair, RsaPrivateKey};
+        use ssh_key::public::RsaPublicKey;
 
-        let keypair =
-            RsaKeypair::try_from(private_key).expect("convert rsa key to ssh-key keypair");
+        // ssh-key 0.6 only converts from rsa 0.9 types, so build the keypair
+        // from its raw big-endian components instead.
+        let mpint = |n: &rsa::BoxedUint| {
+            Mpint::from_positive_bytes(&n.to_be_bytes()).expect("encode rsa mpint")
+        };
+        let [p, q] = private_key.primes() else {
+            panic!("expected two-prime rsa key");
+        };
+        let iqmp = private_key
+            .crt_coefficient()
+            .expect("compute rsa crt coefficient");
+        let keypair = RsaKeypair {
+            public: RsaPublicKey {
+                e: mpint(private_key.e()),
+                n: mpint(private_key.n()),
+            },
+            private: RsaPrivateKey {
+                d: mpint(private_key.d()),
+                iqmp: mpint(&iqmp),
+                p: mpint(p),
+                q: mpint(q),
+            },
+        };
         let ssh_private_key = PrivateKey::from(keypair);
         let pem = ssh_private_key
             .to_openssh(ssh_key::LineEnding::LF)
@@ -566,7 +589,7 @@ mod tests {
         }
 
         let private_key =
-            rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("generate rsa key");
+            rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).expect("generate rsa key");
 
         let signer = RsaTestSigner::new(private_key.clone());
 
@@ -616,7 +639,7 @@ mod tests {
         }
 
         let private_key =
-            rsa::RsaPrivateKey::new(&mut rand_core::OsRng, 2048).expect("generate rsa key");
+            rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).expect("generate rsa key");
         let signer = RsaTestSigner::new(private_key);
 
         let namespace = "git";
