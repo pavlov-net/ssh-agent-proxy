@@ -17,7 +17,7 @@ env_logger = "0.11"
 thiserror = "2"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["process", "resource", "mman"] }
+nix = { version = "0.32", features = ["process", "resource", "mman"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
@@ -39,6 +39,6 @@ embed-resource = "3"
 reqwest = { version = "0.13", features = ["blocking"] }
 tempfile = "3"
 ed25519-dalek = "3"
-rsa = "0.9"
+rsa = "0.10"
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
